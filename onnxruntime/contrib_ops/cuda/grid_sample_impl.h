@@ -16,9 +16,8 @@ void GridSampleImpl(
     const int64_t mode,
     const int64_t padding_mode,
     const int64_t align_corners,
-    const int64_t dims_input[4],
-    const int64_t H_out,
-    const int64_t W_out,
+    const gsl::span<const int64_t>& dims_input,
+    const gsl::span<const int64_t>& dims_grid,
     T* output_data);
 
 }  // namespace cuda

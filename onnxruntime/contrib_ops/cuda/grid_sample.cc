@@ -25,6 +25,7 @@ REGISTER_KERNEL_TYPED(float, 1, LAYOUT_NCHW, kMSDomain)
 
 #ifdef ENABLE_CUDA_NHWC_OPS
 REGISTER_KERNEL_TYPED(float, 16, LAYOUT_NHWC, kMSInternalNHWCDomain)
+REGISTER_KERNEL_TYPED(float, 20, LAYOUT_NHWC, kMSInternalNHWCDomain)
 #endif
 
 template <typename T, bool IsNHWC>
@@ -32,11 +33,19 @@ GridSample<T, IsNHWC>::GridSample(const OpKernelInfo& info) : CudaKernel(info) {
   std::string mode_str = info.GetAttrOrDefault<std::string>("mode", "bilinear");
   std::string padding_mode_str = info.GetAttrOrDefault<std::string>("padding_mode", "zeros");
   align_corners_ = static_cast<bool>(info.GetAttrOrDefault<int64_t>("align_corners", 0));
-  ORT_ENFORCE(mode_str == "bilinear" || mode_str == "nearest" || mode_str == "bicubic",
-              "mode \"", mode_str, "\" not supported, expect bilinear, nearest or bicubic");
+
+  if (mode_str == "bilinear"){
+      mode_str = "linear";
+  }
+  else if (mode_str == "bicubic"){
+      mode_str = "cubic";
+  }
+    ORT_ENFORCE(mode_str == "linear" || mode_str == "nearest" || mode_str == "cubic",
+              "mode \"", mode_str, "\" not supported, expect linear, nearest or cubic "
+                                   "(bilinear or bicubic before ops 20)");
   ORT_ENFORCE(padding_mode_str == "zeros" || padding_mode_str == "border" || padding_mode_str == "reflection",
               "padding_mode \"", padding_mode_str, "\" not supported, expect zeros, border or reflection");
-  if (mode_str == "bicubic") {
+  if (mode_str == "cubic") {
     mode_i_ = 2;
   } else if (mode_str == "nearest") {
     mode_i_ = 1;
@@ -59,25 +68,34 @@ Status GridSample<T, IsNHWC>::ComputeInternal(OpKernelContext* context) const {
   const Tensor* Grid = context->Input<Tensor>(1);
   const auto& dims_grid = Grid->Shape().GetDims();
 
-  if (dims_input.size() != 4 || dims_grid.size() != 4) {
-    return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "Only 4-D tensor is supported");
-  }
+//  if (dims_input.size() != 4 || dims_grid.size() != 4) {
+//    return Status(common::ONNXRUNTIME, common::INVALID_ARGUMENT, "Only 4-D tensor is supported");
+//  }
   ORT_ENFORCE(dims_grid[0] == dims_input[0], "Grid batch size ", dims_grid[0], " does not match input batch size ", dims_input[0]);
   ORT_ENFORCE(dims_grid[3] == 2, "Last dimension of grid: ", dims_grid[3], ", expect 2");
 
-  using Ch = Channels<IsNHWC>;
+//  using Ch = Channels<IsNHWC>;
 
-  TensorShapeVector dims_output(4);
-  dims_output[Ch::N] = dims_input[Ch::N];
-  dims_output[Ch::C] = dims_input[Ch::C];
-  dims_output[Ch::H] = dims_grid[1 /* Grid::H */];
-  dims_output[Ch::W] = dims_grid[2 /* Grid::W */];
+  TensorShapeVector dims_output(dims_input.size());
+  if (IsNHWC){
+      dims_output[0] = dims_input[0];
+      dims_output[dims_input.size()-1] = dims_input[dims_input.size()-1];
+      for (size_t i=1; i<dims_grid.size()-1; i++) {
+          dims_output[i] = dims_grid[i];
+      }
+  }
+  else { //IsNHWC == false
+      dims_output[0] = dims_input[0];
+      dims_output[1] = dims_input[1];
+      for (size_t i=1; i<dims_grid.size()-1; i++) {
+          dims_output[i+1] = dims_grid[i];
+      }
+  }
   Tensor* Y = context->Output(0, dims_output);
   // Return early if the output tensor is going to be of size 0
   if (Y->Shape().Size() == 0) {
     return Status::OK();
   }
-
   typedef typename ToCudaType<T>::MappedType CudaT;
   CudaT* Y_data = reinterpret_cast<CudaT*>(Y->MutableData<T>());
   GridSampleImpl<CudaT, IsNHWC>(
@@ -87,16 +105,18 @@ Status GridSample<T, IsNHWC>::ComputeInternal(OpKernelContext* context) const {
       mode_i_,
       padding_mode_i_,
       align_corners_,
-      dims_input.data(),
-      dims_grid[1],
-      dims_grid[2],
+      dims_input, //.data(),
+      dims_grid, //.data(),
       Y_data);
+
   return Status::OK();
 }
 }  // namespace cuda
 }  // namespace contrib
 
 namespace cuda {
-REGISTER_KERNEL_TYPED(float, 16, LAYOUT_NCHW, kOnnxDomain)
+    REGISTER_KERNEL_TYPED(float, 16, LAYOUT_NCHW, kOnnxDomain)
+    REGISTER_KERNEL_TYPED(float, 20, LAYOUT_NCHW, kOnnxDomain)
+
 }  // namespace cuda
 }  // namespace onnxruntime

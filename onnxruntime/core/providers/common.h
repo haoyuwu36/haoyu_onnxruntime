@@ -126,7 +126,7 @@ inline Status ComputePad(const int64_t in_dim,
   return Status::OK();
 }
 
-constexpr inline int64_t ComputeOutputShape(const int64_t in_dim,
+constexpr inline int64_t  ComputeOutputShape(const int64_t in_dim,
                                             const int64_t stride, const int64_t kernel, const int64_t dilation,
                                             const int64_t pad_head, const int64_t pad_tail) {
   const SafeInt<int64_t> dkernel = SafeInt<int64_t>(dilation) * (kernel - 1) + 1;
