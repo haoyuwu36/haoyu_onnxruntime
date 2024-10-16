@@ -994,26 +994,5 @@ TEST(GridsampleTest, test_grid_sample_20_4D_bicubic_reflection_no_align_corners)
   test.AddOutput<float>("Y", Y_shape, Y_data);
   RunTests(test, GetExecutionProviders(20));
 }
-
-//
-//TEST(GridsampleTest, test_grid_sample_20_4D_bicubic_reflection_no_align_corners) {
-//    OpTester test("GridSample", 20);
-//    std::string mode = "cubic";
-//    std::string padding_mode = "reflection";
-//    int64_t align_corners = 0;
-//    std::initializer_list<int64_t> X_shape { 2, 2, 3, 2 };
-//    std::initializer_list<float> X_data {-0.290962f, 0.867797f, -0.085436f, -1.597520f, 0.695524f, 0.838739f, 0.513032f, 0.166242f, -0.546135f, -0.780313f, -0.512993f, -0.449479f, 1.594718f, 0.953375f, 0.692587f, -0.798364f, -0.128799f, -0.456210f, 2.098909f, -1.561220f, 1.713821f, -0.701970f, -0.287280f, -1.708048f};
-//    std::initializer_list<int64_t> Grid_shape { 2, 3, 2, 2 };
-//    std::initializer_list<float> Grid_data {0.934471f, 0.728362f, -0.458301f, -1.040800f, 0.157908f, 0.753451f, -0.122762f, 0.100970f, 0.889432f, 0.495471f, 0.897108f, 0.176205f, 0.134514f, -0.287037f, -0.202498f, -0.637759f, 0.802292f, 1.094459f, 0.445338f, 0.034096f, -0.396126f, -1.184798f, -0.222199f, -0.851887f};
-//    std::initializer_list<int64_t> Y_shape { 2, 2, 3, 2 };
-//    std::initializer_list<float> Y_data {1.037788f, -0.275160f, 0.953595f, -0.518196f, 0.118127f, -1.525148f, -0.413483f, 0.696689f, -0.450182f, -0.696169f, -0.561886f, -0.828986f, 0.343953f, 1.379633f, -0.417260f, -0.781500f, 1.666511f, 1.599268f, 0.106200f, 1.088396f, -2.079140f, -0.612122f, 1.822402f, 1.173807f};
-//    test.AddInput<float>("X", X_shape, X_data);
-//    test.AddInput<float>("Grid", Grid_shape, Grid_data);
-//    test.AddAttribute("mode", mode);
-//    test.AddAttribute("padding_mode", padding_mode);
-//    test.AddAttribute("align_corners", align_corners);
-//    test.AddOutput<float>("Y", Y_shape, Y_data);
-//    RunTests(test, GetExecutionProviders(20));
-//}
 }  // namespace test
 }  // namespace onnxruntime

@@ -14,9 +14,6 @@ namespace onnxruntime {
         namespace cuda {
             template <typename T>
             __device__ __inline__ int64_t roundDown2ll(T value);
-//            {
-//                static_assert(false, "not implemented");
-//            };
 
             template <>
             __device__ __inline__ int64_t roundDown2ll<float>(float value) {
@@ -50,9 +47,6 @@ namespace onnxruntime {
 
             template <typename T>
             __device__ __inline__ int64_t near2ll(T value);
-//            {
-//                static_assert(false, "not implemented");
-//            };
 
             template <>
             __device__ __inline__ int64_t near2ll<float>(float value) {
@@ -100,7 +94,6 @@ namespace onnxruntime {
 
             template<typename T>
             __device__ T GsReflect(T fx, T x_min, T x_max) {
-//  float fx = static_cast<float>(x);
                 T dx = {};
                 T range = x_max - x_min;
                 if (fx < x_min) {
@@ -123,7 +116,7 @@ namespace onnxruntime {
                     }
                 }
                 // else fallthrough
-                return fx; //static_cast<T>(fx);
+                return fx;
             }
 
             template<typename T, bool Layout, int64_t dim_size>
@@ -183,18 +176,8 @@ namespace onnxruntime {
 #pragma unroll
                 for (int i = 0; i < spatial_size; i++) {
                     GsGetCubicCoeffs<T>(p[i], coeff_ND[i]);
-                    if (threadIdx.x < DEBUG_SIZE){
-                        //printf("p[%d]: %f\n", i, p[i]);
-                        //printf("coeff_ND[%d][0]: %f\n", i, coeff_ND[i][0]);
-                        //printf("coeff_ND[%d][1]: %f\n", i, coeff_ND[i][1]);
-                        //printf("coeff_ND[%d][2]: %f\n", i, coeff_ND[i][2]);
-                        //printf("coeff_ND[%d][3]: %f\n", i, coeff_ND[i][3]);
-                    }
                 }
 
-                if (threadIdx.x < DEBUG_SIZE) {
-                    //printf("cube[0]: %f\n", cube[0]);
-                }
                 T output = 0.f;
                 int64_t cube_idx_count = 1 << (spatial_size * 2);
                 int64_t idx_ND[spatial_size];
@@ -203,10 +186,6 @@ namespace onnxruntime {
                     T weight = cube[idx];
                     for (int j = 0; j < spatial_size; j++) {
                         weight *= coeff_ND[j][idx_ND[j]];
-                        if (threadIdx.x < DEBUG_SIZE){
-                            //printf("weight: %f\n", weight);
-                            //printf("output: %f\n", output);
-                        }
                     }
                     output += weight;
 
@@ -230,11 +209,6 @@ namespace onnxruntime {
                 idx_output_excl_channel[0] = idx_output_ND[CH::N];
                 memcpy(idx_output_excl_channel + 1, idx_output_ND + CH::SPATIAL, sizeof(int64_t)*(spatial_size));
 
-                if (id < DEBUG_SIZE) {
-                    for (int i=0; i<dim_size-1; i++){
-                        //printf("id: %ld, idx_output_excl[%d]: %ld\n", id, i, idx_output_excl_channel[i]);
-                    }
-                }
                 return indexNDTo1D(idx_output_excl_channel, dims_grid, dim_size - 1);;
             }
 
@@ -251,9 +225,7 @@ namespace onnxruntime {
                 using CH = Channels<Layout, static_cast<int>(dim_size)>;
                 const int64_t *dims_input = dims_input_array.Data();
                 const int64_t *dims_grid = dims_grid_array.Data();
-//                const int64_t dim_size = 4;
                 const int64_t spatial_size = dim_size - 2;
-//                const int64_t *dims_input_spatial = dims_input + CH::SPATIAL;
 
                 //Check if thread idx is bigger than output vector size. If so, end early.
                 int64_t total_thread_count = dims_input[CH::N] * dims_input[CH::C];
@@ -273,15 +245,7 @@ namespace onnxruntime {
                     memcpy(dims_output + CH::SPATIAL, &dims_grid[1], (spatial_size) * sizeof(int64_t));
                 }
                 index1DtoND(id, dims_output, dim_size, idx_output_ND);
-                if (id < DEBUG_SIZE){
-                    //printf("id: %d, Layout: %s\n", id, Layout ? "NHWC" : "NCHW");
-                    for (int i=0; i<dim_size; i++){
-                        //printf("dims_output[%d]: %ld\n", i, dims_output[i]);
-                    }
-                    for (int i=0; i<dim_size; i++){
-                        //printf("idx_output_ND[%d]: %ld\n", i, idx_output_ND[i]);
-                    }
-                }
+
                 // Apply grid filter to current thread pixel
                 T grid_imageSpace[spatial_size];
                 {
@@ -293,14 +257,6 @@ namespace onnxruntime {
                     for (int i = 0; i < spatial_size; i++) {
                         grid_imageSpace[i] = GsDenormalize(grid_vals[spatial_size -1 -i], dims_input[CH::SPATIAL + i],
                                                            align_corners == 1);
-                    }
-
-                    if (id < DEBUG_SIZE){
-                        //printf("grid_idx: %d\n", grid_idx);
-                        //printf("grid_vals: %f, %f", grid_vals[0], grid_vals[1]);
-                        for (int i=0; i<spatial_size; i++){
-                            //printf("idx: %d, grid_imageSpace[%d]: %f\n", id, i, grid_imageSpace[i]);
-                        }
                     }
                 }
 
@@ -327,14 +283,6 @@ namespace onnxruntime {
                                 grid_imageSpace[i] = GsReflect<T>(grid_imageSpace[i], border[2 * i], border[2 * i + 1]);
                             }
                         }
-                    }
-                }
-                if (id < DEBUG_SIZE){
-                    for (int i=0; i<spatial_size*2; i++){
-                        //printf("idx: %d, after padding border[%d]: %f\n", id, i, border[i]);
-                    }
-                    for (int i=0; i<spatial_size; i++){
-                        //printf("idx: %d, after padding grid_imageSpace[%d]: %f\n", id, i, grid_imageSpace[i]);
                     }
                 }
 
@@ -379,12 +327,7 @@ namespace onnxruntime {
                     output_data[id] =
                             PixelAtGrid<T, Layout, dim_size>(input_data, idx_input_ND, dims_input, padding_mode,
                                                    border);
-//                    if (id < DEBUG_SIZE){
-//                        for (int i = 0; i < spatial_size; i++) {
-//                            //printf("idx: %d, idx_input_ND[%d]: %ld\n", id, i, idx_input_ND[CH::SPATIAL + i]);
-//                        }
-//                        //printf("idx: %d, output: %f\n", id, output_data[id]);
-//                    }
+
                     return;
                 }
                 if (mode == 2) {  // cubic
@@ -409,9 +352,6 @@ namespace onnxruntime {
                         cube[idx] =
                                 PixelAtGrid<T, Layout, dim_size>(input_data, idx_input_ND, dims_input, padding_mode,
                                                        border);
-                        if (id < DEBUG_SIZE){
-                            //printf("cube[%ld]: %f\n", idx, cube[idx]);
-                        }
                     }
 
                     T dp[spatial_size]; // top-left corner of the bbox
@@ -419,18 +359,6 @@ namespace onnxruntime {
                         dp[i] = grid_imageSpace[i] - static_cast<T>(p[i] + 1.f);
                     }
                     output_data[id] = GsCubicInterpolate<T, spatial_size>(cube, dp);
-                    if (id < DEBUG_SIZE){
-                        for (int i=0; i<spatial_size; i++){
-                            //printf("p[i]: %ld\n", p[i]);
-                        }
-                        for (int i=0; i<spatial_size; i++){
-                            //printf("cube[i]: %f\n", cube[i]);
-                        }
-                        for (int i=0; i<spatial_size; i++){
-                            //printf("dp[i]: %f\n", dp[i]);
-                        }
-                        //printf("output_data[id]: %f", output_data[id]);
-                    }
                     return;
                 }
             }
