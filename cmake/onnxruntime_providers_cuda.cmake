@@ -67,6 +67,7 @@
         "${ONNXRUNTIME_ROOT}/contrib_ops/cuda/collective/distributed_squeeze.cc"
       )
     endif()
+    set_source_files_properties("${ONNXRUNTIME_ROOT}/contrib_ops/cuda/grid_sample_impl.cu" PROPERTIES COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CUDA>:--device-debug>)
     # add using ONNXRUNTIME_ROOT so they show up under the 'contrib_ops' folder in Visual Studio
     source_group(TREE ${ONNXRUNTIME_ROOT} FILES ${onnxruntime_cuda_contrib_ops_cc_srcs} ${onnxruntime_cuda_contrib_ops_cu_srcs})
     list(APPEND onnxruntime_providers_cuda_src ${onnxruntime_cuda_contrib_ops_cc_srcs} ${onnxruntime_cuda_contrib_ops_cu_srcs})

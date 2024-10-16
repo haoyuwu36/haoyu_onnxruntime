@@ -153,11 +153,15 @@ Status RegisterCudaNhwcKernels(KernelRegistry& kernel_registry) {
 namespace onnxruntime::contrib::cuda {
 
 class CUDA_NHWC_OP_TYPED_CLASS_NAME(16, float, GridSample);
+class CUDA_NHWC_OP_TYPED_CLASS_NAME(20, MLFloat16, GridSample);
+class CUDA_NHWC_OP_TYPED_CLASS_NAME(20, BFloat16, GridSample);
 
 onnxruntime::common::Status RegisterCudaNhwcContribKernels(onnxruntime::KernelRegistry& kernel_registry) {
   static const BuildKernelCreateInfoFn nhwc_function_table[] = {
       BuildKernelCreateInfo<void>,  // default entry to avoid the list become empty after ops-reducing
       BuildKernelCreateInfo<CUDA_NHWC_OP_TYPED_CLASS_NAME(16, float, GridSample)>,
+      BuildKernelCreateInfo<CUDA_NHWC_OP_TYPED_CLASS_NAME(20, MLFloat16, GridSample)>,
+      BuildKernelCreateInfo<CUDA_NHWC_OP_TYPED_CLASS_NAME(20, BFloat16, GridSample)>,
   };
 
   for (auto& function_table_entry : nhwc_function_table) {

@@ -3,262 +3,427 @@
 
 #include "core/providers/cuda/cu_inc/common.cuh"
 #include "grid_sample_impl.h"
+#include <stdio.h>
+
+#define DEBUG_SIZE 1// && id > 2
 
 using namespace onnxruntime::cuda;
 
 namespace onnxruntime {
-namespace contrib {
-namespace cuda {
+    namespace contrib {
+        namespace cuda {
+            template <typename T>
+            __device__ __inline__ int64_t roundDown2ll(T value);
 
-template <typename T>
-__device__ T GsDenormalize(T n, int64_t length, bool align_corners) {
-  T x = {};
-  if (align_corners) {  // align_corners: true => [-1, 1] to [0, length - 1]
-    x = (n + static_cast<T>(1)) / static_cast<T>(2) * (length - 1);
-  } else {  // align_corners: false => [-1, 1] to [-0.5, length - 0.5]
-    x = ((n + static_cast<T>(1)) * length - static_cast<T>(1)) / static_cast<T>(2);
-  }
-  return x;
-}
+            template <>
+            __device__ __inline__ int64_t roundDown2ll<float>(float value) {
+                return std::floor(value);
+            }
+
+            template <>
+            __device__ __inline__ int64_t roundDown2ll<double>(double value) {
+                return std::floor(value);
+            }
+
+            template <>
+            __device__ __inline__ int64_t roundDown2ll<int>(int value) {
+                return std::floor(value);  // floor of an int is itself
+            }
+
+            template <>
+            __device__ __inline__ int64_t roundDown2ll<__half>(__half value) {
+                return __half2ll_rd(value);  // floor of an int is itself
+            }
+
+            template <>
+            __device__ __inline__ int64_t roundDown2ll<__nv_bfloat16>(__nv_bfloat16 value) {
+                return __bfloat162ll_rd(value);  // floor of an int is itself
+            }
+
+            template <>
+            __device__ __inline__ int64_t roundDown2ll<BFloat16>(BFloat16 value) {
+                return __bfloat162ll_rd(static_cast<__nv_bfloat16>(value));  // floor of an int is itself
+            }
+
+            template <typename T>
+            __device__ __inline__ int64_t near2ll(T value);
+
+            template <>
+            __device__ __inline__ int64_t near2ll<float>(float value) {
+                return std::nearbyint(value);
+            }
+
+            template <>
+            __device__ __inline__ int64_t near2ll<double>(double value) {
+                return std::nearbyint(value);
+            }
+
+            template <>
+            __device__ __inline__ int64_t near2ll<int>(int value) {
+                return std::nearbyint(value);  // floor of an int is itself
+            }
+
+            template <>
+            __device__ __inline__ int64_t near2ll<__half>(__half value) {
+                return __half2ll_rn(value);  // floor of an int is itself
+            }
+
+            template <>
+            __device__ __inline__ int64_t near2ll<__nv_bfloat16>(__nv_bfloat16 value) {
+                return __bfloat162ll_rn(value);  // floor of an int is itself
+            }
+
+            template <>
+            __device__ __inline__ int64_t near2ll<BFloat16>(BFloat16 value) {
+                return __bfloat162ll_rn(static_cast<__nv_bfloat16>(value));  // floor of an int is itself
+            }
 
 
-template <typename T>
-__device__ T GsReflect(T x, float x_min, float x_max) {
-  float fx = static_cast<float>(x);
-  float dx = {};
-  float range = x_max - x_min;
-  if (fx < x_min) {
-    dx = x_min - fx;
-    int n = static_cast<int>(dx / range);
-    float r = dx - n * range;
-    if (n % 2 == 0) {
-      fx = x_min + r;
-    } else {
-      fx = x_max - r;
-    }
-  } else if (fx > x_max) {
-    dx = fx - x_max;
-    int n = static_cast<int>(dx / range);
-    float r = dx - n * range;
-    if (n % 2 == 0) {
-      fx = x_max - r;
-    } else {
-      fx = x_min + r;
-    }
-  }
-  // else fallthrough
-  return static_cast<T>(fx);
-}
 
-template <typename T, bool Layout>
-__device__ T PixelAtGrid(const T* input_data, int64_t bIdx, int64_t cIdx, int64_t y, int64_t x,
-                         int64_t padding_mode, int64_t N, int64_t C, int64_t H, int64_t W, float border[4]) {
-  T pixel = 0.0f;
+            template<typename T>
+            __device__ T GsDenormalize(T n, int64_t length, bool align_corners) {
+                T x = {};
+                if (align_corners) {  // align_corners: true => [-1, 1] to [0, length - 1]
+                    x = (n + static_cast<T>(1.f)) / static_cast<T>(2.f) * static_cast<T>(length - 1);
+                } else {  // align_corners: false => [-1, 1] to [-0.5, length - 0.5]
+                    x = ((n + static_cast<T>(1.f)) * static_cast<T>(length) - static_cast<T>(1.f)) / static_cast<T>(2.f);
+                }
+                return x;
+            }
 
-  auto PixelOffset = [bIdx, cIdx, C, H, W](int64_t x, int64_t y) -> int64_t {
-    return Layout == LAYOUT_NCHW
-       ? (bIdx * C * H * W + cIdx * H * W + y * W + x)
-       : (bIdx * H * W * C + y * W * C + x * C + cIdx);
-  };
 
-  if (padding_mode == 0) {  // zeros
-    if (x >= 0 && x < W && y >= 0 && y < H) {
-      pixel = input_data[PixelOffset(x, y)];
-    }
-  } else if (padding_mode == 1) {  // border
-    x = max((int64_t)0, min((int64_t)W - 1, (int64_t)x));
-    y = max((int64_t)0, min((int64_t)H - 1, (int64_t)y));
-    pixel = input_data[PixelOffset(x, y)];
-  } else {  // Reflection
-    x = (int64_t)GsReflect<T>(x, border[0], border[2]);
-    y = (int64_t)GsReflect<T>(y, border[1], border[3]);
-    pixel = input_data[PixelOffset(x, y)];
-  }
-  return pixel;
-}
+            template<typename T>
+            __device__ T GsReflect(T fx, T x_min, T x_max) {
+                T dx = {};
+                T range = x_max - x_min;
+                if (fx < x_min) {
+                    dx = x_min - fx;
+                    int n = static_cast<int>(dx / range);
+                    T r = dx - static_cast<T>(n) * range;
+                    if (n % 2 == 0) {
+                        fx = x_min + r;
+                    } else {
+                        fx = x_max - r;
+                    }
+                } else if (fx > x_max) {
+                    dx = fx - x_max;
+                    int n = static_cast<int>(dx / range);
+                    T r = dx - static_cast<T>(n) * range;
+                    if (n % 2 == 0) {
+                        fx = x_max - r;
+                    } else {
+                        fx = x_min + r;
+                    }
+                }
+                // else fallthrough
+                return fx;
+            }
 
-__device__ void GsGetCubicCoeffs(float x, float coeffs[4]) {
-  float cubic_alpha = -0.75f;
-  x = abs(x);
-  coeffs[0] = (((cubic_alpha * (x + 1) - 5 * cubic_alpha) * (x + 1) + 8 * cubic_alpha) * (x + 1) - 4 * cubic_alpha);
-  coeffs[1] = (((cubic_alpha + 2) * x - (cubic_alpha + 3)) * x * x + 1);
-  coeffs[2] = (((cubic_alpha + 2) * (1 - x) - (cubic_alpha + 3)) * (1 - x) * (1 - x) + 1);
-  coeffs[3] = (((cubic_alpha * (2 - x) - 5 * cubic_alpha) * (2 - x) + 8 * cubic_alpha) * (2 - x) - 4 * cubic_alpha);
-}
+            template<typename T, bool Layout, int64_t dim_size>
+            __device__ T PixelAtGrid(const T *input_data, int64_t *idx_input, const int64_t *dims_input,
+                                      int64_t padding_mode, T *border) {
+                T pixel = static_cast<T>(0.f);
 
-template <typename T>
-__device__ T GsBicubicInterpolate(T p[4][4], float x, float y) {
-  float v[4] = {};
-  float coeffs[4] = {};
-  GsGetCubicCoeffs(x, coeffs);
-  for (int64_t i = 0; i < 4; i++) {
-    v[i] = coeffs[0] * p[i][0] + coeffs[1] * p[i][1] + coeffs[2] * p[i][2] + coeffs[3] * p[i][3];
-  }
-  GsGetCubicCoeffs(y, coeffs);
-  T pixel = static_cast<T>(coeffs[0] * v[0] + coeffs[1] * v[1] + coeffs[2] * v[2] + coeffs[3] * v[3]);
-  return pixel;
-}
+                using CH = Channels<Layout, static_cast<int>(dim_size)>;
+                const int64_t spatial_size = dim_size - 2;
+                int64_t *idx_input_spatial = &idx_input[CH::SPATIAL];
+                const int64_t *dims_input_spatial = &dims_input[CH::SPATIAL];
 
-template <typename T, bool Layout>
-__global__ void _GridSampleKernel(
-    const T* input_data,
-    const T* grid_data,
-    const int64_t mode,
-    const int64_t padding_mode,
-    const int64_t align_corners,
-    const int64_t N,
-    const int64_t C,
-    const int64_t H_in,
-    const int64_t W_in,
-    const int64_t H_out,
-    const int64_t W_out,
-    T* output_data)
-{
-    CALCULATE_ELEMENTWISE_INDEX_OR_EXIT(idx, N * C * H_out * W_out);
-    // extract batch index, channel index, y index, x index for current thread
-    int BIdx, yIdx, xIdx, cIdx;
-    if constexpr (Layout == LAYOUT_NCHW) {
-      BIdx = idx / (C * H_out * W_out);
-      int tmpBCnt = BIdx * (C * H_out * W_out);
+                if (padding_mode == 0) {  // zeros
+                    for (int i = 0; i < spatial_size; i++) {
+                        if (idx_input_spatial[i] < 0 || idx_input_spatial[i] >= dims_input_spatial[i]) {
+                            return pixel;
+                        }
+                    }
+                } else if (padding_mode == 1) {  // border
+                    for (int i = 0; i < spatial_size; i++) {
+                        idx_input_spatial[i] = max((int64_t) 0, min((int64_t) dims_input_spatial[i] - 1,
+                                                                    (int64_t) idx_input_spatial[i]));
+                    }
+                } else {  // Reflection
+                    for (int i = 0; i < spatial_size; i++) {
+                        idx_input_spatial[i] = (int64_t) GsReflect<T>(idx_input_spatial[i], border[2 * i],
+                                                                      border[2 * i + 1]);
+                    }
+                }
 
-      cIdx = (idx - tmpBCnt) / (H_out * W_out);
-      int tmpCCnt = tmpBCnt + cIdx * (H_out * W_out);
+                int64_t PixelOffset = indexNDTo1D(idx_input, dims_input, dim_size);
+                return input_data[PixelOffset];
+            }
 
-      yIdx = (idx - tmpCCnt) / W_out;
-      int tmpHCnt = tmpCCnt + yIdx * W_out;
+            template<typename T>
+            __device__ void GsGetCubicCoeffs(T c, T coeffs[4]) {
+                float cubic_alpha = -0.75f;
+                float x = abs(static_cast<float>(c));
+                coeffs[0] = static_cast<float>((((cubic_alpha * (x + 1.f) - 5.f * cubic_alpha) * (x + 1.f) + 8.f * cubic_alpha) * (x + 1.f) -
+                             4.f * cubic_alpha));
+                coeffs[1] = static_cast<float>((((cubic_alpha + 2.f) * x - (cubic_alpha + 3.f)) * x * x + 1.f));
+                coeffs[2] = static_cast<float>((((cubic_alpha + 2.f) * (1.f - x) - (cubic_alpha + 3.f)) * (1.f - x) * (1.f - x) + 1.f));
+                coeffs[3] = static_cast<float>((((cubic_alpha * (2.f - x) - 5.f * cubic_alpha) * (2.f - x) + 8.f * cubic_alpha) * (2.f - x) -
+                             4.f * cubic_alpha));
+            }
 
-      xIdx = (idx - tmpHCnt);
-    } else {
-      static_assert(Layout == LAYOUT_NHWC, "Unsupported layout");
+            template<typename T, int64_t spatial_size>
+            __device__ T GsCubicInterpolate(T *cube, T *p) {
+//                const int64_t dim_size = 4;
+                int64_t dims_cube[spatial_size];
+#pragma unroll
+                for (int i = 0; i < spatial_size; i++) {
+                    dims_cube[i] = 4;
+                }
 
-      BIdx = idx / (H_out * W_out * C);
-      int tmpBCnt = BIdx * (H_out * W_out * C);
+                T coeff_ND[spatial_size][4];
+#pragma unroll
+                for (int i = 0; i < spatial_size; i++) {
+                    GsGetCubicCoeffs<T>(p[i], coeff_ND[i]);
+                }
 
-      yIdx = (idx - tmpBCnt) / (W_out * C);
-      int tmpHCnt = tmpBCnt + yIdx * (W_out * C);
+                T output = 0.f;
+                int64_t cube_idx_count = 1 << (spatial_size * 2);
+                int64_t idx_ND[spatial_size];
+                for (int idx = 0; idx < cube_idx_count; idx++) {
+                    index1DtoND(idx, dims_cube, spatial_size, idx_ND);
+                    T weight = cube[idx];
+                    for (int j = 0; j < spatial_size; j++) {
+                        weight *= coeff_ND[j][idx_ND[j]];
+                    }
+                    output += weight;
 
-      xIdx = (idx - tmpHCnt) / C;
-      int tmpWCnt = tmpHCnt + xIdx * C;
+                }
+                return output;
+            }
 
-      cIdx = (idx - tmpWCnt);
-    }
+            template<bool Layout, int64_t dim_size>
+            __device__ int64_t outputIndexToGridIdx(
+                    const int64_t id,
+                    const int64_t *dims_input,
+                    const int64_t *dims_grid,
+                    const int64_t *idx_output_ND
+                    ) {
+                using CH = Channels<Layout, static_cast<int>(dim_size)>;
+                int spatial_size = dim_size - 2;
 
-    int grid_idx = BIdx * H_out * W_out + yIdx * W_out + xIdx;
-    T grid_X = grid_data[grid_idx * 2 + 0];
-    T grid_Y = grid_data[grid_idx * 2 + 1];
-    int outIdx = idx;
+                //We need batch size from dims_input and spatial dims from dims_grid
+                //E.g 4D calculation: int grid_idx = BIdx * H_out * W_out + yIdx * W_out + xIdx
+                int64_t idx_output_excl_channel[dim_size - 1];
+                idx_output_excl_channel[0] = idx_output_ND[CH::N];
+                memcpy(idx_output_excl_channel + 1, idx_output_ND + CH::SPATIAL, sizeof(int64_t)*(spatial_size));
 
-    T grid_x_imgSpace = GsDenormalize(grid_X, W_in, align_corners == 1);
-    T grid_y_imgSpace = GsDenormalize(grid_Y, H_in, align_corners == 1);
-    if (mode == 1) {  //nearest
-      grid_x_imgSpace = nearbyint(grid_x_imgSpace);
-      grid_y_imgSpace = nearbyint(grid_y_imgSpace);
-    }
-    float x_min = -0.5f;
-    float x_max = W_in - 0.5f;
-    float y_min = -0.5f;
-    float y_max = H_in - 0.5f;
+                return indexNDTo1D(idx_output_excl_channel, dims_grid, dim_size - 1);;
+            }
 
-    if (align_corners) {
-      x_min = 0.0f;
-      x_max = W_in - 1.0;
-      y_min = 0.0f;
-      y_max = H_in - 1.0f;
-    }
-    float border[] = {x_min, y_min, x_max, y_max};  // l-t-r-b
-    if (grid_x_imgSpace < x_min || grid_x_imgSpace > x_max ||
-        grid_y_imgSpace < y_min || grid_y_imgSpace > y_max) { // out of bound
-      if (padding_mode == 1) {  // border
-        // Clamping must not be done here, see #10607
-        // grid_x_imgSpace = max(0.0f, min(grid_x_imgSpace, W_in - 1.0f));
-        // grid_y_imgSpace = max(0.0f, min(grid_y_imgSpace, H_in - 1.0f));
-      } else if (padding_mode == 2) {  // reflection
-        grid_x_imgSpace = GsReflect(grid_x_imgSpace, x_min, x_max);
-        grid_y_imgSpace = GsReflect(grid_y_imgSpace, y_min, y_max);
-      }
-    }
+            template<typename T, bool Layout, int64_t dim_size>
+            __global__ void _GridSampleKernel(
+                    const T *input_data,
+                    const T *grid_data,
+                    const int64_t mode,
+                    const int64_t padding_mode,
+                    const int64_t align_corners,
+                    const TArray<int64_t, dim_size> dims_input_array,
+                    const TArray<int64_t, dim_size> dims_grid_array,
+                    T *output_data) {
+                using CH = Channels<Layout, static_cast<int>(dim_size)>;
+                const int64_t *dims_input = dims_input_array.Data();
+                const int64_t *dims_grid = dims_grid_array.Data();
+                const int64_t spatial_size = dim_size - 2;
 
-    if (mode == 0) {  // bilinear
-      int x1 = floor(grid_x_imgSpace);
-      int y1 = floor(grid_y_imgSpace);
-      int x2 = x1 + 1;
-      int y2 = y1 + 1;
-      T w_lt = 0.0f;
-      T w_rt = 0.0f;
-      T w_lb = 0.0f;
-      T w_rb = 0.0f;
+                //Check if thread idx is bigger than output vector size. If so, end early.
+                int64_t total_thread_count = dims_input[CH::N] * dims_input[CH::C];
+                for (size_t i = 1; i < dim_size - 1; i++) {
+                    total_thread_count *= dims_grid[i];
+                }
+                CALCULATE_ELEMENTWISE_INDEX_OR_EXIT(id, total_thread_count);
 
-      T w_r = grid_x_imgSpace - x1;
-      T w_l = 1.0f - w_r;
-      T w_b = grid_y_imgSpace - y1;
-      T w_t = 1.0f - w_b;
 
-      w_lt = w_t * w_l;
-      w_rt = w_t * w_r;
-      w_lb = w_b * w_l;
-      w_rb = w_b * w_r;
+                // extract N-D index and dimensions for the output vector.
+                int64_t dims_output[dim_size];
+                int64_t idx_output_ND[dim_size];
+                {
+                    dims_output[CH::N] = dims_input[CH::N];
+                    dims_output[CH::C] = dims_input[CH::C];
+                    // dims_grid has spatial dimension started at index 1
+                    memcpy(dims_output + CH::SPATIAL, &dims_grid[1], (spatial_size) * sizeof(int64_t));
+                }
+                index1DtoND(id, dims_output, dim_size, idx_output_ND);
 
-      T lt_v = PixelAtGrid<T, Layout>(input_data, BIdx, cIdx, y1, x1, padding_mode, N, C, H_in, W_in, border);
-      T rt_v = PixelAtGrid<T, Layout>(input_data, BIdx, cIdx, y1, x2, padding_mode, N, C, H_in, W_in, border);
-      T lb_v = PixelAtGrid<T, Layout>(input_data, BIdx, cIdx, y2, x1, padding_mode, N, C, H_in, W_in, border);
-      T rb_v = PixelAtGrid<T, Layout>(input_data, BIdx, cIdx, y2, x2, padding_mode, N, C, H_in, W_in, border);
-      T interpoV = w_lt * lt_v + w_rt * rt_v + w_lb * lb_v + w_rb * rb_v;
-      output_data[outIdx] = interpoV;
-      return;
-    }
-    if (mode == 1) {  // nearest
-      int x_n = grid_x_imgSpace;
-      int y_n = grid_y_imgSpace;
-      output_data[outIdx] =
-        PixelAtGrid<T, Layout>(input_data, BIdx, cIdx, y_n, x_n, padding_mode, N, C, H_in, W_in, border);
-      return;
-    }
-    if (mode == 2) {  // bicubic
-      int64_t x0 = static_cast<int64_t>(std::floor(grid_x_imgSpace)) - 1;  // top-left corner of the bbox
-      int64_t y0 = static_cast<int64_t>(std::floor(grid_y_imgSpace)) - 1;
-      T p[4][4] = {};  // [H][W]
-      for (int64_t h = 0; h < 4; h++) {
-        for (int64_t w = 0; w < 4; w++) {
-          p[h][w] = 
-            PixelAtGrid<T, Layout>(input_data, BIdx, cIdx, h + y0, w + x0, padding_mode, N, C, H_in, W_in, border);
-        }
-      }
-      T dx = grid_x_imgSpace - x0 - 1;
-      T dy = grid_y_imgSpace - y0 - 1;
-      output_data[outIdx] = GsBicubicInterpolate(p, dx, dy);
-    }
-}
+                // Apply grid filter to current thread pixel
+                T grid_imageSpace[spatial_size];
+                {
+                    int grid_idx = outputIndexToGridIdx<Layout, dim_size>(id, dims_input, dims_grid, idx_output_ND);
+//                    const T *grid_vals;
+                    //note that this ordering of spatial dimension is the reverse of the tensor dimension ordering, e.g. WHD vs DHW for 3D
+                    const T *grid_vals = &grid_data[grid_idx * spatial_size];
+#pragma unroll
+                    for (int i = 0; i < spatial_size; i++) {
+                        grid_imageSpace[i] = GsDenormalize(grid_vals[spatial_size -1 -i], dims_input[CH::SPATIAL + i],
+                                                           align_corners == 1);
+                    }
+                }
 
-template <typename T, bool IsNHWC>
-void GridSampleImpl(
-    cudaStream_t stream,
-    const T* input_data,
-    const T* grid_data,
-    const int64_t mode,
-    const int64_t padding_mode,
-    const int64_t align_corners,
-    const int64_t dims[4],
-    const int64_t H_out,
-    const int64_t W_out,
-    T* output_data) {
-  using Ch = Channels<IsNHWC>;
 
-  int blocksPerGrid = static_cast<int>(
-    ceil(static_cast<T>(dims[Ch::N] * dims[Ch::C] * H_out * W_out) / GridDim::maxThreadsPerBlock));
-  _GridSampleKernel<T, IsNHWC><<<blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream>>>(
-      input_data, grid_data, mode, padding_mode, align_corners, 
-      dims[Ch::N], dims[Ch::C], dims[Ch::H], dims[Ch::W],
-      H_out, W_out, output_data);
-}
+                //Preprocess for interpolation: Handle pixel mapped outside input spatial dimensions
+                T border[spatial_size * 2];
+                {
+                    if (align_corners == 1) {
+                        for (int i = 0; i < spatial_size; i++) {
+                            border[i * 2] = static_cast<T>(0.f);
+                            border[i * 2 + 1] = static_cast<T>(dims_input[CH::SPATIAL+i]) - static_cast<T>(1.f);
+                        }
+                    } else {
+                        for (int i = 0; i < spatial_size; i++) {
+                            border[i * 2] = static_cast<T>(-0.5f);
+                            border[i * 2 + 1] = static_cast<T>(dims_input[CH::SPATIAL+i]) - static_cast<T>(0.5f);
+                        }
+                    }
+                    for (int i = 0; i < spatial_size; i++) {
+                        if (grid_imageSpace[i] < border[2 * i] || grid_imageSpace[i] > border[2 * i + 1]) {
+                            if (padding_mode == 1) {  // border
+                                // Clamping must not be done here, see #10607
+                            } else if (padding_mode == 2) {  // reflection
+                                grid_imageSpace[i] = GsReflect<T>(grid_imageSpace[i], border[2 * i], border[2 * i + 1]);
+                            }
+                        }
+                    }
+                }
+
+                //Perform interpolation on the pixel
+                int64_t idx_input_ND[dim_size];
+                idx_input_ND[CH::N] = idx_output_ND[CH::N];
+                idx_input_ND[CH::C] = idx_output_ND[CH::C];
+                if (mode == 0) {  // linear
+                    int64_t grid_imageSpace_roundup[spatial_size];
+                    int64_t grid_imageSpace_rounddown[spatial_size];
+                    for (int i = 0; i < spatial_size; i++) {
+                        grid_imageSpace_rounddown[i] = roundDown2ll<T>(grid_imageSpace[i]);
+                        grid_imageSpace_roundup[i] = grid_imageSpace_rounddown[i] + 1;
+                    }
+
+                    //need to calculate contribution for each integer pixel in the bounding box, there are 2^spatial pixels
+                    T val_interpolated;
+                    for (int i = 0; i < 1 << spatial_size; i++) {
+                        T weight_multiplier = static_cast<T>(1.f);
+#pragma unroll
+                        for (int j = 0; j < spatial_size; j++) {
+                            if (i & (1 << j)) { //if jth dimension is 1
+                                weight_multiplier *= (grid_imageSpace[j] - static_cast<T>(grid_imageSpace_rounddown[j]));
+                                idx_input_ND[CH::SPATIAL + j] = grid_imageSpace_roundup[j];
+                            } else {
+                                weight_multiplier *= (static_cast<T>(grid_imageSpace_roundup[j]) - grid_imageSpace[j]);
+                                idx_input_ND[CH::SPATIAL + j] = grid_imageSpace_rounddown[j];
+                            }
+                        }
+                        T pixel_val = PixelAtGrid<T, Layout, dim_size>(input_data, idx_input_ND, dims_input,
+                                                             padding_mode, border);
+                        val_interpolated += weight_multiplier * pixel_val;
+                    }
+
+                    output_data[id] = val_interpolated;
+                    return;
+                }
+                if (mode == 1) {  // nearest
+                    for (int i = 0; i < spatial_size; i++) {
+                        idx_input_ND[CH::SPATIAL + i] = near2ll<T>(grid_imageSpace[i]);
+                    }
+                    output_data[id] =
+                            PixelAtGrid<T, Layout, dim_size>(input_data, idx_input_ND, dims_input, padding_mode,
+                                                   border);
+
+                    return;
+                }
+                if (mode == 2) {  // cubic
+                    int64_t p[spatial_size]; // top-left corner of the bbox
+                    for (int i = 0; i < spatial_size; i++) {
+                        p[i] = static_cast<int64_t>(roundDown2ll<T>(grid_imageSpace[i])) - 1;
+                    }
+
+                    const int64_t cube_idx_count = 1 << (spatial_size * 2);
+                    T cube[cube_idx_count];
+                    int64_t dims_cube[spatial_size];
+                    for (int i = 0; i < spatial_size; i++) {
+                        dims_cube[i] = 4;
+                    }
+
+                    for (int64_t idx = 0; idx < cube_idx_count; idx++) {
+                        index1DtoND(idx, dims_cube, spatial_size,
+                                    &idx_input_ND[CH::SPATIAL]); //p_cube stores the offset from top-left corner
+                        for (int j = 0; j < spatial_size; j++) {
+                            idx_input_ND[CH::SPATIAL + j] += p[j]; //apply corner idx to get cube idx;
+                        }
+                        cube[idx] =
+                                PixelAtGrid<T, Layout, dim_size>(input_data, idx_input_ND, dims_input, padding_mode,
+                                                       border);
+                    }
+
+                    T dp[spatial_size]; // top-left corner of the bbox
+                    for (int i = 0; i < spatial_size; i++) {
+                        dp[i] = grid_imageSpace[i] - static_cast<T>(p[i] + 1.f);
+                    }
+                    output_data[id] = GsCubicInterpolate<T, spatial_size>(cube, dp);
+                    return;
+                }
+            }
+
+            // TODO change to lambda function after C++20?
+            template<bool IsNHWC, int64_t dim_size>
+            int64_t getBlocksCount(
+                    const gsl::span<const int64_t>& dims_input,
+                    const gsl::span<const int64_t>& dims_grid
+                    ) {
+                using CH = Channels<IsNHWC, static_cast<int>(dim_size)>;
+                int64_t total_thread_count = dims_input[CH::N] * dims_input[CH::C];
+                for (int64_t i = 1; i < dim_size - 1; i++) {
+                    total_thread_count *= dims_grid[i];
+                }
+                int64_t blocksPerGrid = CeilDiv(total_thread_count, GridDim::maxThreadsPerBlock);
+                return blocksPerGrid;
+            }
+
+            template<typename T, bool IsNHWC>
+            void GridSampleImpl(
+                    cudaStream_t stream,
+                    const T *input_data,
+                    const T *grid_data,
+                    const int64_t mode,
+                    const int64_t padding_mode,
+                    const int64_t align_corners,
+                    const gsl::span<const int64_t>& dims_input,
+                    const gsl::span<const int64_t>& dims_grid,
+                    T *output_data) {
+                const int dim_size = dims_input.size();
+                typedef typename ToCudaType<T>::MappedType CudaT;
+                const CudaT* input_data_cuda = reinterpret_cast<const CudaT*>(input_data);
+                const CudaT* grid_data_cuda = reinterpret_cast<const CudaT*>(grid_data);
+                CudaT* output_data_cuda = reinterpret_cast<CudaT*>(output_data);
+
+                int64_t blocksPerGrid;
+                switch (dim_size){
+                    case 4:
+                        blocksPerGrid = getBlocksCount<IsNHWC, 4>(dims_input, dims_grid);
+                        _GridSampleKernel < CudaT, IsNHWC, 4 ><<<blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream>>>(
+                                input_data_cuda, grid_data_cuda, mode, padding_mode, align_corners,
+                                dims_input, dims_grid, output_data_cuda);
+                        break;
+
+                    case 5:
+                        blocksPerGrid = getBlocksCount<IsNHWC, 5>(dims_input, dims_grid);
+                        _GridSampleKernel < CudaT, IsNHWC, 5 ><<<blocksPerGrid, GridDim::maxThreadsPerBlock, 0, stream>>>(
+                                input_data_cuda, grid_data_cuda, mode, padding_mode, align_corners,
+                                dims_input, dims_grid, output_data_cuda);
+                        break;
+                }
+            }
 
 #define SPECIALIZED_IMPL(T, IsNHWC)                                                                                    \
   template void GridSampleImpl<T, IsNHWC>(cudaStream_t stream, const T* input_data, const T* grid_data,                \
                                           const int64_t mode, const int64_t padding_mode, const int64_t align_corners, \
-                                          const int64_t[4], const int64_t H_out, const int64_t W_out, T* output_data);
+                                          const gsl::span<const int64_t>& dims_input, const gsl::span<const int64_t>& dims_grid, T* output_data);
 
-SPECIALIZED_IMPL(float, false)  // NCHW
-SPECIALIZED_IMPL(float, true)   // NHWC
-
-}  // namespace cuda
-}  // namespace contrib
+            SPECIALIZED_IMPL(float, false)  // NCHW
+            SPECIALIZED_IMPL(float, true)   // NHWC
+            SPECIALIZED_IMPL(MLFloat16, false)
+            SPECIALIZED_IMPL(MLFloat16, true)
+            SPECIALIZED_IMPL(BFloat16, false)
+            SPECIALIZED_IMPL(BFloat16, true)
+        }  // namespace cuda
+    }  // namespace contrib
 }  // namespace onnxruntime

@@ -14,12 +14,12 @@ std::vector<std::unique_ptr<IExecutionProvider>> GetExecutionProviders(int opset
 
   execution_providers.emplace_back(DefaultCpuExecutionProvider());
 #ifdef USE_CUDA
-  if (opset_version < 20) {
+//  if (opset_version < 20) {
     execution_providers.emplace_back(DefaultCudaExecutionProvider());
 #ifdef ENABLE_CUDA_NHWC_OPS
     execution_providers.push_back(DefaultCudaNHWCExecutionProvider());
 #endif
-  }
+//  }
 
 #endif
   return execution_providers;
@@ -994,6 +994,5 @@ TEST(GridsampleTest, test_grid_sample_20_4D_bicubic_reflection_no_align_corners)
   test.AddOutput<float>("Y", Y_shape, Y_data);
   RunTests(test, GetExecutionProviders(20));
 }
-
 }  // namespace test
 }  // namespace onnxruntime
