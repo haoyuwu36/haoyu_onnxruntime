@@ -86,6 +86,7 @@ cmake_dependent_option(onnxruntime_ENABLE_CUDA_EP_INTERNAL_TESTS "Build with CUD
 option(onnxruntime_USE_CUDA_NHWC_OPS "Build CUDA with NHWC op support" OFF)
 option(onnxruntime_CUDA_MINIMAL "Build CUDA without any operations apart from memcpy ops. Usefuel for a very minial TRT build" OFF)
 option(onnxruntime_ENABLE_CUDA_LINE_NUMBER_INFO "When building with CUDA support, generate device code line number information." OFF)
+option(onnxruntime_ENABLE_CUDA_DEVICE_DEBUG "When building with CUDA support, generate device code line number information." OFF)
 option(onnxruntime_USE_OPENVINO "Build with OpenVINO support" OFF)
 option(onnxruntime_USE_COREML "Build with CoreML support" OFF)
 option(onnxruntime_USE_NNAPI_BUILTIN "Build with builtin NNAPI lib for Android NNAPI support" OFF)
@@ -1481,6 +1482,12 @@ if (onnxruntime_USE_CUDA)
 
   if (onnxruntime_ENABLE_CUDA_LINE_NUMBER_INFO)
     add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:--generate-line-info>")
+  endif()
+  if (onnxruntime_ENABLE_CUDA_DEVICE_DEBUG)
+    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:--device-debug>)
+#    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-suppress-stack-size-warning>) #recursive function produce error
+#    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xnvlink \"--suppress-stack-size-warning\"")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xptxas \"--suppress-stack-size-warning\"")
   endif()
 endif()
 

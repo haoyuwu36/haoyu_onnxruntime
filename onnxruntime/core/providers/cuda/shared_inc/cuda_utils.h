@@ -175,11 +175,25 @@ struct NumericLimits<double> {
 constexpr bool LAYOUT_NCHW = false;
 constexpr bool LAYOUT_NHWC = true;
 
-template <bool IsNHWC>
+template <bool IsNHWC, int Size=4>
 struct Channels;
 
+template <int Size>
+struct Channels<LAYOUT_NHWC, Size> {
+    static constexpr size_t N = 0;
+    static constexpr size_t C = Size-1;
+    static constexpr size_t SPATIAL = 1;
+};
+
+template <int Size>
+struct Channels<LAYOUT_NCHW, Size> {
+    static constexpr size_t N = 0;
+    static constexpr size_t C = 1;
+    static constexpr size_t SPATIAL = 2;
+};
+
 template <>
-struct Channels<LAYOUT_NHWC> {
+struct Channels<LAYOUT_NHWC, 4> {
   static constexpr size_t N = 0;
   static constexpr size_t H = 1;
   static constexpr size_t W = 2;
@@ -188,7 +202,7 @@ struct Channels<LAYOUT_NHWC> {
 };
 
 template <>
-struct Channels<LAYOUT_NCHW> {
+struct Channels<LAYOUT_NCHW, 4> {
   static constexpr size_t N = 0;
   static constexpr size_t C = 1;
   static constexpr size_t H = 2;
